@@ -1,5 +1,5 @@
 /*
- * Copyright 1999-2101 Alibaba Group.
+ * Copyright 1999-2017 Alibaba Group.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ import java.io.IOException;
 import java.lang.reflect.Type;
 import java.math.BigDecimal;
 
+import com.alibaba.fastjson.JSONException;
 import com.alibaba.fastjson.parser.DefaultJSONParser;
 import com.alibaba.fastjson.parser.JSONLexer;
 import com.alibaba.fastjson.parser.JSONToken;
@@ -39,7 +40,14 @@ public class BigDecimalCodec implements ObjectSerializer, ObjectDeserializer {
             out.writeNull(SerializerFeature.WriteNullNumberAsZero);
         } else {
             BigDecimal val = (BigDecimal) object;
-            out.write(val.toString());
+
+            String outText;
+            if (out.isEnabled(SerializerFeature.WriteBigDecimalAsPlain)) {
+                outText = val.toPlainString();
+            } else {
+                outText = val.toString();
+            }
+            out.write(outText);
 
             if (out.isEnabled(SerializerFeature.WriteClassName) && fieldType != BigDecimal.class && val.scale() == 0) {
                 out.write('.');
@@ -49,7 +57,11 @@ public class BigDecimalCodec implements ObjectSerializer, ObjectDeserializer {
 
     @SuppressWarnings("unchecked")
     public <T> T deserialze(DefaultJSONParser parser, Type clazz, Object fieldName) {
-        return (T) deserialze(parser);
+        try {
+            return (T) deserialze(parser);
+        } catch (Exception ex) {
+            throw new JSONException("parseDecimal error, field : " + fieldName, ex);
+        }
     }
 
     @SuppressWarnings("unchecked")

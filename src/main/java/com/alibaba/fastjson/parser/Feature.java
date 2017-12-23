@@ -1,5 +1,5 @@
 /*
- * Copyright 1999-2101 Alibaba Group.
+ * Copyright 1999-2017 Alibaba Group.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -101,7 +101,41 @@ public enum Feature {
     /**
      * @since 1.2.9
      */
-    UseObjectArray
+    UseObjectArray,
+
+    /**
+     * @since 1.2.22, 1.1.54.android
+     */
+    SupportNonPublicField,
+
+    /**
+     * @since 1.2.29
+     *
+     * disable autotype key '@type'
+     */
+    IgnoreAutoType,
+
+    /**
+     * @since 1.2.30
+     *
+     * disable field smart match, improve performance in some scenarios.
+     */
+    DisableFieldSmartMatch,
+
+    /**
+     * @since 1.2.41, backport to 1.1.66.android
+     */
+    SupportAutoType,
+
+    /**
+     * @since 1.2.42
+     */
+    NonStringKeyAsString,
+
+    /**
+     * @since 1.2.45
+     */
+    CustomMapDeserializer
     ;
 
     Feature(){

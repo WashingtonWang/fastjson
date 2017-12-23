@@ -1,5 +1,5 @@
 /*
- * Copyright 1999-2101 Alibaba Group.
+ * Copyright 1999-2017 Alibaba Group.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,18 +15,18 @@
  */
 package com.alibaba.fastjson.serializer;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.Writer;
 import java.lang.reflect.Type;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.IdentityHashMap;
-import java.util.Locale;
-import java.util.TimeZone;
+import java.util.*;
+import java.util.zip.GZIPOutputStream;
 
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONException;
+import com.alibaba.fastjson.util.IOUtils;
 
 /**
  * @author wenshao[szujobs@hotmail.com]
@@ -135,11 +135,22 @@ public class JSONSerializer extends SerializeFilterable {
         return out.isEnabled(SerializerFeature.WriteClassName) //
                && (fieldType != null //
                    || (!out.isEnabled(SerializerFeature.NotWriteRootClassName)) //
-                   || context.parent != null);
+                   || (context != null && (context.parent != null)));
     }
 
     public boolean containsReference(Object value) {
-        return references != null && references.containsKey(value);
+        if (references == null) {
+            return false;
+        }
+
+        SerialContext refContext = references.get(value);
+        if (refContext == null) {
+            return false;
+        }
+
+        Object fieldName = refContext.fieldName;
+
+        return fieldName == null || fieldName instanceof Integer || fieldName instanceof String;
     }
 
     public void writeReference(Object object) {
@@ -305,6 +316,48 @@ public class JSONSerializer extends SerializeFilterable {
             }
             String text = dateFormat.format((Date) object);
             out.writeString(text);
+            return;
+        }
+
+        if (object instanceof byte[]) {
+            byte[] bytes = (byte[]) object;
+            if ("gzip".equals(format) || "gzip,base64".equals(format)) {
+                GZIPOutputStream gzipOut = null;
+                try {
+                    ByteArrayOutputStream byteOut = new ByteArrayOutputStream();
+                    if (bytes.length < 512) {
+                        gzipOut = new GZIPOutputStream(byteOut, bytes.length);
+                    } else {
+                        gzipOut = new GZIPOutputStream(byteOut);
+                    }
+                    gzipOut.write(bytes);
+                    gzipOut.finish();
+                    out.writeByteArray(byteOut.toByteArray());
+                } catch (IOException ex) {
+                    throw new JSONException("write gzipBytes error", ex);
+                } finally {
+                    IOUtils.close(gzipOut);
+                }
+            } else if ("hex".equals(format)) {
+                out.writeHex(bytes);
+            } else {
+                out.writeByteArray(bytes);
+            }
+            return;
+        }
+
+        if (object instanceof Collection) {
+            Collection collection = (Collection) object;
+            Iterator iterator = collection.iterator();
+            out.write('[');
+            for (int i = 0; i < collection.size(); i++) {
+                Object item = iterator.next();
+                if (i != 0) {
+                    out.write(',');
+                }
+                writeWithFormat(item, format);
+            }
+            out.write(']');
             return;
         }
         write(object);

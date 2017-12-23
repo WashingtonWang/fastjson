@@ -1,5 +1,5 @@
 /*
- * Copyright 1999-2101 Alibaba Group.
+ * Copyright 1999-2017 Alibaba Group.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,18 +20,14 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.Writer;
 import java.lang.reflect.Array;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.lang.reflect.Type;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
 import java.nio.charset.Charset;
 import java.nio.charset.CharsetDecoder;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.TimeZone;
+import java.util.*;
 
 import com.alibaba.fastjson.parser.DefaultJSONParser;
 import com.alibaba.fastjson.parser.Feature;
@@ -42,15 +38,10 @@ import com.alibaba.fastjson.parser.deserializer.ExtraProcessor;
 import com.alibaba.fastjson.parser.deserializer.ExtraTypeProvider;
 import com.alibaba.fastjson.parser.deserializer.FieldTypeResolver;
 import com.alibaba.fastjson.parser.deserializer.ParseProcess;
-import com.alibaba.fastjson.serializer.JSONSerializer;
-import com.alibaba.fastjson.serializer.JavaBeanSerializer;
-import com.alibaba.fastjson.serializer.ObjectSerializer;
-import com.alibaba.fastjson.serializer.SerializeConfig;
-import com.alibaba.fastjson.serializer.SerializeFilter;
-import com.alibaba.fastjson.serializer.SerializeWriter;
-import com.alibaba.fastjson.serializer.SerializerFeature;
+import com.alibaba.fastjson.serializer.*;
 import com.alibaba.fastjson.util.IOUtils;
 import com.alibaba.fastjson.util.TypeUtils;
+import sun.reflect.annotation.AnnotationType;
 
 /**
  * This is the main class for using Fastjson. You usually call these two methods {@link #toJSONString(Object)} and {@link #parseObject(String, Class)}.
@@ -87,6 +78,7 @@ public abstract class JSON implements JSONStreamAware, JSONAware {
     static final SerializeFilter[] emptyFilters         = new SerializeFilter[0];
 
     public static String           DEFFAULT_DATE_FORMAT = "yyyy-MM-dd HH:mm:ss";
+    //public static String           DEFFAULT_LOCAL_DATE_TIME_FORMAT = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS";
 
     public static int              DEFAULT_PARSER_FEATURE;
     static {
@@ -109,19 +101,54 @@ public abstract class JSON implements JSONStreamAware, JSONAware {
         features |= SerializerFeature.SkipTransientField.getMask();
         features |= SerializerFeature.WriteEnumUsingName.getMask();
         features |= SerializerFeature.SortField.getMask();
+
+        {
+            String featuresProperty = IOUtils.getStringProperty("fastjson.serializerFeatures.MapSortField");
+            int mask = SerializerFeature.MapSortField.getMask();
+            if ("true".equals(featuresProperty)) {
+                features |= mask;
+            } else if ("false".equals(featuresProperty)) {
+                features &= ~mask;
+            }
+        }
+
         DEFAULT_GENERATE_FEATURE = features;
+    }
+
+    /**
+     * config default type key
+     * @since 1.2.14
+     */
+    public static void setDefaultTypeKey(String typeKey) {
+        DEFAULT_TYPE_KEY = typeKey;
+        ParserConfig.global.symbolTable.addSymbol(typeKey, 
+                                                  0, 
+                                                  typeKey.length(), 
+                                                  typeKey.hashCode(), true);
     }
     
     public static Object parse(String text) {
         return parse(text, DEFAULT_PARSER_FEATURE);
     }
 
-    public static Object parse(String text, int features) {
+    /**
+     *
+     * @since 1.2.38
+     */
+    public static Object parse(String text, ParserConfig config) {
+        return parse(text, config, DEFAULT_PARSER_FEATURE);
+    }
+
+    /**
+     *
+     * @since 1.2.38
+     */
+    public static Object parse(String text, ParserConfig config, int features) {
         if (text == null) {
             return null;
         }
 
-        DefaultJSONParser parser = new DefaultJSONParser(text, ParserConfig.getGlobalInstance(), features);
+        DefaultJSONParser parser = new DefaultJSONParser(text, config, features);
         Object value = parser.parse();
 
         parser.handleResovleTask(value);
@@ -131,9 +158,16 @@ public abstract class JSON implements JSONStreamAware, JSONAware {
         return value;
     }
 
+    public static Object parse(String text, int features) {
+        return parse(text, ParserConfig.getGlobalInstance(), features);
+    }
+
     public static Object parse(byte[] input, Feature... features) {
         char[] chars = allocateChars(input.length);
         int len = IOUtils.decodeUTF8(input, 0, input.length, chars);
+        if (len < 0) {
+            return null;
+        }
         return parse(new String(chars, 0, len), features);
     }
 
@@ -191,7 +225,11 @@ public abstract class JSON implements JSONStreamAware, JSONAware {
             return (JSONObject) obj;
         }
 
-        return (JSONObject) JSON.toJSON(obj);
+        try {
+            return (JSONObject) JSON.toJSON(obj);
+        } catch (RuntimeException e) {
+            throw new JSONException("can not cast to JSONObject.", e);
+        }
     }
 
     /**
@@ -351,8 +389,14 @@ public abstract class JSON implements JSONStreamAware, JSONAware {
         if (charset == IOUtils.UTF8) {
             char[] chars = allocateChars(bytes.length);
             int chars_len = IOUtils.decodeUTF8(bytes, offset, len, chars);
+            if (chars_len < 0) {
+                return null;
+            }
             strVal = new String(chars, 0, chars_len);
         } else {
+            if (len < 0) {
+                return null;
+            }
             strVal = new String(bytes, offset, len, charset);
         }
         return (T) parseObject(strVal, clazz, features);
@@ -570,6 +614,10 @@ public abstract class JSON implements JSONStreamAware, JSONAware {
     public static byte[] toJSONBytes(Object object, SerializerFeature... features) {
         return toJSONBytes(object, DEFAULT_GENERATE_FEATURE, features);
     }
+
+    public static byte[] toJSONBytes(Object object, SerializeFilter filter, SerializerFeature... features) {
+        return toJSONBytes(object, SerializeConfig.globalInstance, new SerializeFilter[] {filter}, DEFAULT_GENERATE_FEATURE, features);
+    }
     
     /**
      * @since 1.2.11 
@@ -637,18 +685,46 @@ public abstract class JSON implements JSONStreamAware, JSONAware {
         return toJSONString(object, mapping, emptyFilters, null, 0, features);
     }
 
+    /**
+     * @since 1.2.42
+     */
     public static byte[] toJSONBytes(Object object, SerializeConfig config, SerializerFeature... features) {
-        return toJSONBytes(object, config, DEFAULT_GENERATE_FEATURE, features);
+        return toJSONBytes(object, config, emptyFilters, DEFAULT_GENERATE_FEATURE, features);
+    }
+
+    /**
+     * @since 1.2.11
+     */
+    public static byte[] toJSONBytes(Object object, SerializeConfig config, int defaultFeatures, SerializerFeature... features) {
+        return toJSONBytes(object, config, emptyFilters, defaultFeatures, features);
+    }
+
+    /**
+     * @since 1.2.42
+     */
+    public static byte[] toJSONBytes(Object object, SerializeFilter[] filters, SerializerFeature... features) {
+        return toJSONBytes(object, SerializeConfig.globalInstance, filters, DEFAULT_GENERATE_FEATURE, features);
+    }
+
+    public static byte[] toJSONBytes(Object object, SerializeConfig config, SerializeFilter filter, SerializerFeature... features) {
+        return toJSONBytes(object, config, new SerializeFilter[] {filter}, DEFAULT_GENERATE_FEATURE, features);
     }
     
     /**
-     * @since 1.2.11 
+     * @since 1.2.42
      */
-    public static byte[] toJSONBytes(Object object, SerializeConfig config, int defaultFeatures, SerializerFeature... features) {
+    public static byte[] toJSONBytes(Object object, SerializeConfig config, SerializeFilter[] filters, int defaultFeatures, SerializerFeature... features) {
         SerializeWriter out = new SerializeWriter(null, defaultFeatures, features);
 
         try {
             JSONSerializer serializer = new JSONSerializer(out, config);
+
+            if (filters != null) {
+                for (SerializeFilter filter : filters) {
+                    serializer.addFilter(filter);
+                }
+            }
+
             serializer.write(object);
             return out.toBytes(IOUtils.UTF8);
         } finally {
@@ -719,7 +795,7 @@ public abstract class JSON implements JSONStreamAware, JSONAware {
                                             int defaultFeatures, //
                                             SerializerFeature... features) throws IOException {
        return writeJSONString(os,  //
-                              IOUtils.UTF8, // 
+                              IOUtils.UTF8, //
                               object, //
                               SerializeConfig.globalInstance, //
                               null, //
@@ -832,7 +908,18 @@ public abstract class JSON implements JSONStreamAware, JSONAware {
         if (javaObject instanceof Map) {
             Map<Object, Object> map = (Map<Object, Object>) javaObject;
 
-            JSONObject json = new JSONObject(map.size());
+            int size = map.size();
+
+            Map innerMap;
+            if (map instanceof LinkedHashMap) {
+                innerMap = new LinkedHashMap(size);
+            } else if (map instanceof TreeMap) {
+                innerMap = new TreeMap();
+            } else {
+                innerMap = new HashMap(size);
+            }
+
+            JSONObject json = new JSONObject(innerMap);
 
             for (Map.Entry<Object, Object> entry : map.entrySet()) {
                 Object key = entry.getKey();
@@ -857,6 +944,11 @@ public abstract class JSON implements JSONStreamAware, JSONAware {
             return array;
         }
 
+        if (javaObject instanceof JSONSerializable) {
+            String json = JSON.toJSONString(javaObject);
+            return JSON.parse(json);
+        }
+
         Class<?> clazz = javaObject.getClass();
 
         if (clazz.isEnum()) {
@@ -877,10 +969,10 @@ public abstract class JSON implements JSONStreamAware, JSONAware {
             return array;
         }
 
-        if (ParserConfig.isPrimitive(clazz)) {
+        if (ParserConfig.isPrimitive2(clazz)) {
             return javaObject;
         }
-        
+
         ObjectSerializer serializer = config.getObjectWriter(clazz);
         if (serializer instanceof JavaBeanSerializer) {
             JavaBeanSerializer javaBeanSerializer = (JavaBeanSerializer) serializer;
@@ -912,7 +1004,20 @@ public abstract class JSON implements JSONStreamAware, JSONAware {
         return TypeUtils.cast(this, clazz, ParserConfig.getGlobalInstance());
     }
 
-    public final static String VERSION = "1.2.13";
+    /**
+     * @since 1.2.33
+     */
+    public <T> T toJavaObject(Type type) {
+        return TypeUtils.cast(this, type, ParserConfig.getGlobalInstance());
+    }
+
+    /**
+     * @since 1.2.33
+     */
+    public <T> T toJavaObject(TypeReference typeReference) {
+        Type type = typeReference != null ? typeReference.getType() : null;
+        return TypeUtils.cast(this, type, ParserConfig.getGlobalInstance());
+    }
     
     private final static ThreadLocal<byte[]> bytesLocal = new ThreadLocal<byte[]>();
     private static byte[] allocateBytes(int length) {
@@ -949,4 +1054,10 @@ public abstract class JSON implements JSONStreamAware, JSONAware {
 
         return chars;
     }
+
+    public static <T> void handleResovleTask(DefaultJSONParser parser, T value) {
+        parser.handleResovleTask(value);
+    }
+
+    public final static String VERSION = "1.2.45";
 }

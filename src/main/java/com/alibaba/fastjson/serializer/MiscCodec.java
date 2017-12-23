@@ -1,5 +1,5 @@
 /*
- * Copyright 1999-2101 Alibaba Group.
+ * Copyright 1999-2017 Alibaba Group.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,31 +31,29 @@ import java.net.URL;
 import java.net.UnknownHostException;
 import java.nio.charset.Charset;
 import java.text.SimpleDateFormat;
-import java.util.Currency;
-import java.util.Iterator;
-import java.util.Locale;
-import java.util.TimeZone;
-import java.util.UUID;
+import java.util.*;
 import java.util.regex.Pattern;
 
-import com.alibaba.fastjson.JSON;
-import com.alibaba.fastjson.JSONException;
-import com.alibaba.fastjson.JSONPath;
-import com.alibaba.fastjson.JSONStreamAware;
+import com.alibaba.fastjson.*;
 import com.alibaba.fastjson.parser.DefaultJSONParser;
 import com.alibaba.fastjson.parser.JSONLexer;
 import com.alibaba.fastjson.parser.JSONToken;
 import com.alibaba.fastjson.parser.deserializer.ObjectDeserializer;
+import com.alibaba.fastjson.util.IOUtils;
 import com.alibaba.fastjson.util.TypeUtils;
 
 /**
  * @author wenshao[szujobs@hotmail.com]
  */
 public class MiscCodec implements ObjectSerializer, ObjectDeserializer {
+    private static      boolean   FILE_RELATIVE_PATH_SUPPORT = false;
+    public final static MiscCodec instance                   = new MiscCodec();
+    private static      Method    method_paths_get;
+    private static      boolean   method_paths_get_error     = false;
 
-    public final static MiscCodec instance               = new MiscCodec();
-    private static Method         method_paths_get;
-    private static boolean        method_paths_get_error = false;
+    static {
+        FILE_RELATIVE_PATH_SUPPORT = "true".equals(IOUtils.getStringProperty("fastjson.deserializer.fileRelativePathSupport"));
+    }
 
     public void write(JSONSerializer serializer, Object object, Object fieldName, Type fieldType,
                       int features) throws IOException {
@@ -123,6 +121,33 @@ public class MiscCodec implements ObjectSerializer, ObjectDeserializer {
         } else if (object instanceof Iterable) {
             Iterator<?> it = ((Iterable<?>) object).iterator();
             writeIterator(serializer, out, it);
+            return;
+        } else if (object instanceof Map.Entry) {
+            Map.Entry entry = (Map.Entry) object;
+            Object objKey = entry.getKey();
+            Object objVal = entry.getValue();
+
+            if (objKey instanceof String) {
+                String key = (String) objKey;
+
+                if (objVal instanceof String) {
+                    String value = (String) objVal;
+                    out.writeFieldValueStringWithDoubleQuoteCheck('{', key, value);
+                } else {
+                    out.write('{');
+                    out.writeFieldName(key);
+                    serializer.write(objVal);
+                }
+            } else {
+                out.write('{');
+                serializer.write(objKey);
+                out.write(':');
+                serializer.write(objVal);
+            }
+            out.write('}');
+            return;
+        } else if (object.getClass().getName().equals("net.sf.json.JSONNull")) {
+            out.writeNull();
             return;
         } else {
             throw new JSONException("not support class : " + objClass);
@@ -223,6 +248,27 @@ public class MiscCodec implements ObjectSerializer, ObjectDeserializer {
         } else if (objVal instanceof String) {
             strVal = (String) objVal;
         } else {
+            if (objVal instanceof JSONObject) {
+                JSONObject jsonObject = (JSONObject) objVal;
+
+                if (clazz == Currency.class) {
+                    String currency = jsonObject.getString("currency");
+                    if (currency != null) {
+                        return (T) Currency.getInstance(currency);
+                    }
+
+                    String symbol = jsonObject.getString("currencyCode");
+                    if (symbol != null) {
+                        return (T) Currency.getInstance(symbol);
+                    }
+                }
+
+                if (clazz == Map.Entry.class) {
+                   return (T) jsonObject.entrySet().iterator().next();
+                }
+
+                return jsonObject.toJavaObject(clazz);
+            }
             throw new JSONException("expect string");
         }
 
@@ -251,17 +297,7 @@ public class MiscCodec implements ObjectSerializer, ObjectDeserializer {
         }
 
         if (clazz == Locale.class) {
-            String[] items = strVal.split("_");
-
-            if (items.length == 1) {
-                return (T) new Locale(items[0]);
-            }
-
-            if (items.length == 2) {
-                return (T) new Locale(items[0], items[1]);
-            }
-
-            return (T) new Locale(items[0], items[1], items[2]);
+            return (T) TypeUtils.toLocale(strVal);
         }
 
         if (clazz == SimpleDateFormat.class) {
@@ -279,6 +315,10 @@ public class MiscCodec implements ObjectSerializer, ObjectDeserializer {
         }
 
         if (clazz == File.class) {
+            if (strVal.indexOf("..") >= 0 && !FILE_RELATIVE_PATH_SUPPORT) {
+                throw new JSONException("file relative path not support.");
+            }
+
             return (T) new File(strVal);
         }
 
@@ -307,29 +347,35 @@ public class MiscCodec implements ObjectSerializer, ObjectDeserializer {
             return (T) new JSONPath(strVal);
         }
 
-        String className = clazz.getTypeName();
 
-        if (className.equals("java.nio.file.Path")) {
-            try {
-                if (method_paths_get == null && !method_paths_get_error) {
-                    Class<?> paths = TypeUtils.loadClass("java.nio.file.Paths");
-                    method_paths_get = paths.getMethod("get", String.class, String[].class);
+
+        if (clazz instanceof Class) {
+            String className = ((Class) clazz).getName();
+
+            if (className.equals("java.nio.file.Path")) {
+                try {
+                    if (method_paths_get == null && !method_paths_get_error) {
+                        Class<?> paths = TypeUtils.loadClass("java.nio.file.Paths");
+                        method_paths_get = paths.getMethod("get", String.class, String[].class);
+                    }
+                    if (method_paths_get != null) {
+                        return (T) method_paths_get.invoke(null, strVal, new String[0]);
+                    }
+
+                    throw new JSONException("Path deserialize erorr");
+                } catch (NoSuchMethodException ex) {
+                    method_paths_get_error = true;
+                } catch (IllegalAccessException ex) {
+                    throw new JSONException("Path deserialize erorr", ex);
+                } catch (InvocationTargetException ex) {
+                    throw new JSONException("Path deserialize erorr", ex);
                 }
-                if (method_paths_get != null) {
-                    return (T) method_paths_get.invoke(null, strVal, new String[0]);
-                }
-                
-                throw new JSONException("Path deserialize erorr");
-            } catch (NoSuchMethodException ex) {
-                method_paths_get_error = true;
-            } catch (IllegalAccessException ex) {
-                throw new JSONException("Path deserialize erorr", ex);
-            } catch (InvocationTargetException ex) {
-                throw new JSONException("Path deserialize erorr", ex);
             }
+
+            throw new JSONException("MiscCodec not support " + className);
         }
 
-        throw new JSONException("MiscCodec not support " + className);
+        throw new JSONException("MiscCodec not support " + clazz.toString());
     }
 
     public int getFastMatchToken() {

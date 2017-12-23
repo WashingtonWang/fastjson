@@ -6,11 +6,7 @@ import java.text.SimpleDateFormat;
 
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONException;
-import com.alibaba.fastjson.parser.DefaultJSONParser;
-import com.alibaba.fastjson.parser.Feature;
-import com.alibaba.fastjson.parser.JSONLexer;
-import com.alibaba.fastjson.parser.JSONScanner;
-import com.alibaba.fastjson.parser.JSONToken;
+import com.alibaba.fastjson.parser.*;
 import com.alibaba.fastjson.util.TypeUtils;
 
 public abstract class AbstractDateDeserializer extends ContextObjectDeserializer implements ObjectDeserializer {
@@ -32,12 +28,34 @@ public abstract class AbstractDateDeserializer extends ContextObjectDeserializer
             String strVal = lexer.stringVal();
             
             if (format != null) {
+                SimpleDateFormat simpleDateFormat = null;
                 try {
-                    SimpleDateFormat simpleDateFormat = new SimpleDateFormat(format);
+                    simpleDateFormat = new SimpleDateFormat(format,JSON.defaultLocale);
+                } catch (IllegalArgumentException ex) {
+                    if (format.equals("yyyy-MM-ddTHH:mm:ss.SSS")) {
+                        format = "yyyy-MM-dd'T'HH:mm:ss.SSS";
+                        simpleDateFormat = new SimpleDateFormat(format);
+                    } else  if (format.equals("yyyy-MM-ddTHH:mm:ss")) {
+                        format = "yyyy-MM-dd'T'HH:mm:ss";
+                        simpleDateFormat = new SimpleDateFormat(format);
+                    }
+                }
+
+                try {
                     val = simpleDateFormat.parse(strVal);
                 } catch (ParseException ex) {
-                    // skip
-                    val = null;
+                    if (format.equals("yyyy-MM-dd'T'HH:mm:ss.SSS") //
+                            && strVal.length() == 19) {
+                        try {
+                            val = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss").parse(strVal);
+                        } catch (ParseException ex2) {
+                            // skip
+                            val = null;
+                        }
+                    } else {
+                        // skip
+                        val = null;
+                    }
                 }
             } else {
                 val = null;
@@ -70,7 +88,7 @@ public abstract class AbstractDateDeserializer extends ContextObjectDeserializer
                     parser.accept(JSONToken.COLON);
                     
                     String typeName = lexer.stringVal();
-                    Class<?> type = TypeUtils.loadClass(typeName, parser.getConfig().getDefaultClassLoader());
+                    Class<?> type = parser.getConfig().checkAutoType(typeName, null, lexer.getFeatures());
                     if (type != null) {
                         clazz = type;
                     }
